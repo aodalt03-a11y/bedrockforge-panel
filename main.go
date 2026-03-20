@@ -8,6 +8,7 @@ import (
 "net"
 "net/http"
 "os"
+"strings"
 "sync"
 "time"
 
@@ -42,6 +43,18 @@ log.Println(msg)
 }
 
 func main() {
+	// Redirect os.Stdout to capture all output including gophertunnel
+	pr, pw, _ := os.Pipe()
+	os.Stdout = pw
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, _ := pr.Read(buf)
+			if n > 0 {
+				addLog(strings.TrimSpace(string(buf[:n])))
+			}
+		}
+	}()
 http.HandleFunc("/", handleIndex)
 http.HandleFunc("/api/status", handleStatus)
 http.HandleFunc("/api/start", handleStart)
