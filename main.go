@@ -26,6 +26,24 @@ var botMu sync.Mutex
 var logs []string
 var logMu sync.Mutex
 
+func init2() {
+	// Intercept log output
+	log.SetOutput(&logWriter{})
+}
+
+type logWriter struct{}
+func (lw *logWriter) Write(p []byte) (int, error) {
+	msg := string(p)
+	if len(msg) > 0 {
+		logMu.Lock()
+		logs = append(logs, msg)
+		if len(logs) > 200 { logs = logs[len(logs)-200:] }
+		logMu.Unlock()
+	}
+	os.Stderr.Write(p)
+	return len(p), nil
+}
+
 func addLog(msg string) {
 logMu.Lock()
 logs = append(logs, time.Now().Format("15:04:05")+" "+msg)
