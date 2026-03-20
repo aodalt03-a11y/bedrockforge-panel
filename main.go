@@ -93,7 +93,7 @@ func handleStart(w http.ResponseWriter, r *http.Request) {
 	botMu.Lock()
 	botRunning = true
 	botMu.Unlock()
-	addLog("Starting bot -> "+req.Server)
+	addLog("START REQUEST RECEIVED: "+req.Server)
 	go func() {
 		cfg := &config.Config{ServerAddr: req.Server, ListenAddr: "0.0.0.0:19132", Headless: true}
 		proxy.StartHeadlessAndListen(cfg)
