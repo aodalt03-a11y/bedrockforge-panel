@@ -21,6 +21,10 @@ button{padding:10px 20px;border-radius:6px;border:none;cursor:pointer;font-weigh
 <button class="start" onclick="start()">Start Bot</button>
 <button class="stop" onclick="stop()">Stop Bot</button>
 </div>
+<div class="card">
+<input id="msg" placeholder="Send chat or command...">
+<button class="start" onclick="sendMsg()">Send</button>
+</div>
 <div class="card"><div style="margin-bottom:8px;color:#666;font-size:12px">LOG</div>
 <div id="log"></div></div>
 <script>
@@ -29,6 +33,11 @@ async function start(){
   const r=await fetch("/api/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({Server:s})});
   const t=await r.text();
   if(t!="started")alert("Error: "+t);
+}
+async function sendMsg(){
+  const m=document.getElementById("msg").value;
+  if(msa-cache.json)return;  await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({Message:m})});
+  document.getElementById("msg").value="";
 }
 async function stop(){await fetch("/api/stop",{method:"POST",body:"{}"});}
 async function tick(){

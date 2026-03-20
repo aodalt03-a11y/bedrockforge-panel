@@ -52,6 +52,7 @@ func main() {
 	http.HandleFunc("/api/status", handleStatus)
 	http.HandleFunc("/api/start", handleStart)
 	http.HandleFunc("/api/stop", handleStop)
+	http.HandleFunc("/api/chat", handleChat)
 	http.HandleFunc("/api/logs", handleLogs)
 	port := os.Getenv("PORT")
 	if port == "" { port = "8080" }
@@ -95,6 +96,17 @@ func handleStart(w http.ResponseWriter, r *http.Request) {
 		addLog("Bot stopped")
 	}()
 	fmt.Fprint(w, "started")
+}
+
+func handleChat(w http.ResponseWriter, r *http.Request) {
+	cors(w)
+	if r.Method != http.MethodPost { http.Error(w, "POST only", 405); return }
+	var req struct { Message string }
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Message == "" { http.Error(w, "message required", 400); return }
+	addLog("[Panel] sending: "+req.Message)
+	proxy.SendBotChat(req.Message)
+	fmt.Fprint(w, "sent")
 }
 
 func handleStop(w http.ResponseWriter, r *http.Request) {
