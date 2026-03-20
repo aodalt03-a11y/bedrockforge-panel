@@ -132,6 +132,11 @@ async function tick(){
     const log=document.getElementById('log');
     log.innerHTML=l.map(x=>'<div style="color:#00ffcc88">'+x+'</div>').join('');
     log.scrollTop=log.scrollHeight;
+    // Auto open auth URL
+    const authLine=l.find(x=>x.includes('microsoft.com/link'));
+      const url=authLine.match(/(https:\/\/[^\s]+)/);
+      if(url){window._authOpened=true;window.open(url[1],'_blank');}
+    }
   }catch(e){}
 }
 setInterval(tick,2000);tick();
