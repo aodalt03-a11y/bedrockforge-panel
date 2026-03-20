@@ -26,20 +26,9 @@ var botMu sync.Mutex
 var logs []string
 var logMu sync.Mutex
 
-func init2() {
-	// Intercept log output
-	log.SetOutput(&logWriter{})
-}
-
-type logWriter struct{}
-func (lw *logWriter) Write(p []byte) (int, error) {
-	msg := string(p)
-	if len(msg) > 0 {
-		logMu.Lock()
-		logs = append(logs, msg)
-		if len(logs) > 200 { logs = logs[len(logs)-200:] }
-		logMu.Unlock()
-	}
+type multiWriter struct{}
+func (mw *multiWriter) Write(p []byte) (int, error) {
+	addLog(string(p))
 	os.Stderr.Write(p)
 	return len(p), nil
 }
@@ -82,24 +71,23 @@ json.NewEncoder(w).Encode(l)
 }
 
 func handleStart(w http.ResponseWriter, r *http.Request) {
-cors(w)
-if r.Method != http.MethodPost { http.Error(w, "POST only", 405); return }
-var req struct { Server string `json:"server"` }
-json.NewDecoder(r.Body).Decode(&req)
-if req.Server == "" { req.Server = os.Getenv("MC_SERVER") }
-if req.Server == "" { http.Error(w, "server required", 400); return }
-botMu.Lock()
-if botRunning { botMu.Unlock(); http.Error(w, "already running", 409); return }
-botRunning = true
-botMu.Unlock()
-addLog("Starting bot -> "+req.Server)
-go func() {
-cfg := &config.Config{ServerAddr: req.Server, ListenAddr: "0.0.0.0:19132", Headless: true}
-proxy.StartHeadlessAndListen(cfg)
-botMu.Lock(); botRunning = false; botMu.Unlock()
-addLog("Bot stopped")
-}()
-fmt.Fprint(w, "started")
+	cors(w)
+	if r.Method != http.MethodPost { http.Error(w, "POST only", 405); return }
+	var req struct { Server string `json:"server"` }
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Server == "" { req.Server = os.Getenv("MC_SERVER") }
+	if req.Server == "" { http.Error(w, "server required", 400); return }
+	botMu.Lock()
+	botRunning = true
+	botMu.Unlock()
+	addLog("Starting bot -> "+req.Server)
+	go func() {
+		cfg := &config.Config{ServerAddr: req.Server, ListenAddr: "0.0.0.0:19132", Headless: true}
+		proxy.StartHeadlessAndListen(cfg)
+		botMu.Lock(); botRunning = false; botMu.Unlock()
+		addLog("Bot stopped")
+	}()
+	fmt.Fprint(w, "started")
 }
 
 func handleStop(w http.ResponseWriter, r *http.Request) {
