@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: bedrockforge-bot
+    env: go
+    buildCommand: CGO_ENABLED=0 go build -o server .
+    startCommand: ./server
+    envVars:
+      - key: MC_SERVER
+        value: play.netherite.gg:19132

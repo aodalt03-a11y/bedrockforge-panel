@@ -1,0 +1,205 @@
+package mods
+
+import (
+"encoding/json"
+"fmt"
+"os"
+"path/filepath"
+"sync"
+
+lua "github.com/yuin/gopher-lua"
+"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
+)
+
+func getScriptsDir_engine() string {
+if d := os.Getenv("BF_SCRIPTS_DIR"); d != "" {
+return d
+}
+return "/data/data/com.termux/files/home/BedrockForge/scripts"
+}
+
+type luaScript struct {
+name string
+L    *lua.LState
+}
+
+type LuaEngine struct {
+	sendToClient func(pk packet.Packet) error
+	sendToServer func(pk packet.Packet) error
+mu          sync.Mutex
+scripts     []*luaScript
+ctx         *Context
+tickCount   int64
+dropCurrent bool
+}
+
+func init() { Register(&LuaEngine{}) }
+
+func (e *LuaEngine) Name() string { return "LuaEngine" }
+
+func (e *LuaEngine) Init(ctx *Context, _ any) {
+e.ctx = ctx
+	e.sendToClient = ctx.SendToClient
+os.MkdirAll(getScriptsDir_engine(), 0755)
+e.loadAll()
+fmt.Printf("[Lua] ready, %d scripts loaded\n", len(e.scripts))
+e.printCmds()
+}
+
+func (e *LuaEngine) loadAll() {
+e.mu.Lock()
+defer e.mu.Unlock()
+// Close existing states
+for _, s := range e.scripts {
+s.L.Close()
+}
+e.scripts = nil
+
+entries, _ := os.ReadDir(getScriptsDir_engine())
+for _, entry := range entries {
+if entry.IsDir() || filepath.Ext(entry.Name()) != ".lua" {
+continue
+}
+path := filepath.Join(getScriptsDir_engine(), entry.Name())
+s, err := e.newScript(path, entry.Name())
+if err != nil {
+fmt.Printf("[Lua] failed to load %s: %v\n", entry.Name(), err)
+continue
+}
+e.scripts = append(e.scripts, s)
+fmt.Printf("[Lua] loaded %s\n", entry.Name())
+}
+}
+
+func (e *LuaEngine) newScript(path, name string) (*luaScript, error) {
+L := lua.NewState()
+e.registerAPI(L)
+	e.registerAdvancedAPI(L)
+	e.registerESPAPI(L)
+	e.registerSchematicAPI(L)
+	e.registerFormsAPI(L)
+if err := L.DoFile(path); err != nil {
+L.Close()
+return nil, err
+}
+return &luaScript{name: name, L: L}, nil
+}
+
+func (e *LuaEngine) Tick() {
+e.mu.Lock()
+scripts := e.scripts
+e.mu.Unlock()
+for _, s := range scripts {
+fn := s.L.GetGlobal("onTick")
+if fn == lua.LNil {
+continue
+}
+if err := s.L.CallByParam(lua.P{Fn: fn, NRet: 0, Protect: true}); err != nil {
+fmt.Printf("[Lua] %s onTick error: %v\n", s.name, err)
+}
+}
+}
+
+func (e *LuaEngine) HandlePacket(ctx *Context) {
+	if ctx.SendToClient != nil { e.sendToClient = ctx.SendToClient }
+	if ctx.SendToServer != nil { e.sendToServer = ctx.SendToServer }
+e.mu.Lock()
+scripts := e.scripts
+e.mu.Unlock()
+
+// Handle %lua commands
+if pk, ok := ctx.Packet.(*packet.Text); ok && ctx.Direction == FromClient {
+msg := pk.Message
+if msg == "%lua reload" {
+e.loadAll()
+_ = ctx.SendToClient(&packet.Text{TextType: packet.TextTypeRaw, Message: "§a[Lua] scripts reloaded"})
+ctx.Drop = true
+return
+}
+if msg == "%lua list" {
+e.mu.Lock()
+out := fmt.Sprintf("§e[Lua] %d scripts:", len(e.scripts))
+for _, s := range e.scripts {
+out += "\n  §f" + s.name
+}
+e.mu.Unlock()
+_ = ctx.SendToClient(&packet.Text{TextType: packet.TextTypeRaw, Message: out})
+ctx.Drop = true
+return
+}
+// Call onChat in all scripts
+for _, s := range scripts {
+fn := s.L.GetGlobal("onChat")
+if fn == lua.LNil {
+continue
+}
+if err := s.L.CallByParam(lua.P{Fn: fn, NRet: 1, Protect: true},
+lua.LString(msg)); err != nil {
+fmt.Printf("[Lua] %s onChat error: %v\n", s.name, err)
+continue
+}
+ret := s.L.Get(-1)
+s.L.Pop(1)
+// If script returns false, drop the packet
+if ret == lua.LFalse {
+ctx.Drop = true
+}
+}
+return
+}
+
+// Handle form responses
+	if pk, ok := ctx.Packet.(*packet.ModalFormResponse); ok && ctx.Direction == FromClient {
+		HandleFormResponse(pk, e)
+		return
+	}
+
+	// Call onPacket for all scripts
+typeName := fmt.Sprintf("%T", ctx.Packet)
+dir := "server"
+if ctx.Direction == FromClient {
+dir = "client"
+}
+for _, s := range scripts {
+fn := s.L.GetGlobal("onPacket")
+if fn == lua.LNil {
+continue
+}
+e.dropCurrent = false
+if err := s.L.CallByParam(lua.P{Fn: fn, NRet: 0, Protect: true},
+lua.LString(dir),
+lua.LString(typeName),
+); err != nil {
+fmt.Printf("[Lua] %s onPacket error: %v\n", s.name, err)
+}
+if e.dropCurrent {
+ctx.Drop = true
+}
+}
+}
+func (e *LuaEngine) printCmds() {
+	type CmdEntry struct {
+		Command     string `json:"cmd"`
+		Description string `json:"desc"`
+		Script      string `json:"script"`
+	}
+	entries := []CmdEntry{}
+	e.mu.Lock()
+	for _, script := range e.scripts {
+		cmds := script.L.GetGlobal("commands")
+		if cmds == lua.LNil { continue }
+		tbl, ok := cmds.(*lua.LTable)
+		if !ok { continue }
+		tbl.ForEach(func(k, v lua.LValue) {
+			entries = append(entries, CmdEntry{
+				Command:     k.String(),
+				Description: v.String(),
+				Script:      script.name,
+			})
+		})
+	}
+	e.mu.Unlock()
+	if data, err := json.Marshal(entries); err == nil {
+		fmt.Println("[CMDS]" + string(data))
+	}
+}

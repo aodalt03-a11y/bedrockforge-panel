@@ -1,0 +1,141 @@
+package mods
+
+import (
+	"encoding/json"
+	"fmt"
+	"sync"
+
+	lua "github.com/yuin/gopher-lua"
+	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
+)
+
+type formCallback struct {
+	L        *lua.LState
+	fn       *lua.LFunction
+	formType string
+}
+
+var (
+	formMu       sync.Mutex
+	pendingForms = map[uint32]*formCallback{}
+	nextFormID   uint32 = 1000
+)
+
+func (e *LuaEngine) registerFormsAPI(L *lua.LState) {
+	L.SetGlobal("openSimpleForm", L.NewFunction(func(L *lua.LState) int {
+		fmt.Println("[Forms] openSimpleForm called, ctx=", e.ctx)
+		if e.sendToClient == nil { fmt.Println("[Forms] no SendToClient"); return 0 }
+		title := L.CheckString(1)
+		content := L.CheckString(2)
+		btnsTbl := L.CheckTable(3)
+		cb := L.OptFunction(4, nil)
+		type Button struct{ Text string  }
+		type Form struct {
+			Type    string   
+			Title   string   
+			Content string   
+			Buttons []Button 
+		}
+		var btns []Button
+		btnsTbl.ForEach(func(k, v lua.LValue) { btns = append(btns, Button{Text: v.String()}) })
+		data, _ := json.Marshal(Form{Type: "form", Title: title, Content: content, Buttons: btns})
+		formMu.Lock()
+		id := nextFormID; nextFormID++
+		if cb != nil { pendingForms[id] = &formCallback{L: L, fn: cb, formType: "simple"} }
+		formMu.Unlock()
+		_ = e.sendToClient(&packet.ModalFormRequest{FormID: id, FormData: data})
+		return 0
+	}))
+
+	L.SetGlobal("openModalForm", L.NewFunction(func(L *lua.LState) int {
+		if e.ctx == nil { return 0 }
+		title := L.CheckString(1)
+		content := L.CheckString(2)
+		btn1 := L.CheckString(3)
+		btn2 := L.CheckString(4)
+		cb := L.OptFunction(5, nil)
+		type Form struct {
+			Type    string 
+			Title   string 
+			Content string 
+			Button1 string 
+			Button2 string 
+		}
+		data, _ := json.Marshal(Form{Type: "modal", Title: title, Content: content, Button1: btn1, Button2: btn2})
+		formMu.Lock()
+		id := nextFormID; nextFormID++
+		if cb != nil { pendingForms[id] = &formCallback{L: L, fn: cb, formType: "modal"} }
+		formMu.Unlock()
+		_ = e.sendToClient(&packet.ModalFormRequest{FormID: id, FormData: data})
+		return 0
+	}))
+
+	L.SetGlobal("openCustomForm", L.NewFunction(func(L *lua.LState) int {
+		if e.ctx == nil { return 0 }
+		title := L.CheckString(1)
+		elsTbl := L.CheckTable(2)
+		cb := L.OptFunction(3, nil)
+		type Element map[string]interface{}
+		type Form struct {
+			Type    string    
+			Title   string    
+			Content []Element 
+		}
+		var els []Element
+		elsTbl.ForEach(func(k, v lua.LValue) {
+			tbl, ok := v.(*lua.LTable)
+			if !ok { return }
+			el := Element{}
+			tbl.ForEach(func(ek, ev lua.LValue) {
+				switch ev := ev.(type) {
+				case lua.LString: el[ek.String()] = string(ev)
+				case lua.LNumber: el[ek.String()] = float64(ev)
+				case lua.LBool:   el[ek.String()] = bool(ev)
+				}
+			})
+			els = append(els, el)
+		})
+		data, _ := json.Marshal(Form{Type: "custom_form", Title: title, Content: els})
+		formMu.Lock()
+		id := nextFormID; nextFormID++
+		if cb != nil { pendingForms[id] = &formCallback{L: L, fn: cb, formType: "custom"} }
+		formMu.Unlock()
+		_ = e.sendToClient(&packet.ModalFormRequest{FormID: id, FormData: data})
+		return 0
+	}))
+}
+
+func HandleFormResponse(pk *packet.ModalFormResponse, e *LuaEngine) {
+	formMu.Lock()
+	cb, ok := pendingForms[pk.FormID]
+	if ok { delete(pendingForms, pk.FormID) }
+	formMu.Unlock()
+	if !ok || cb == nil { return }
+	switch cb.formType {
+	case "simple", "modal":
+		var idx int = -1
+		respData, _ := pk.ResponseData.Value(); if err := json.Unmarshal(respData, &idx); err == nil {
+			if err := cb.L.CallByParam(lua.P{Fn: cb.fn, NRet: 0, Protect: true}, lua.LNumber(idx)); err != nil {
+				fmt.Println("[Forms] error:", err)
+			}
+		} else {
+			cb.L.CallByParam(lua.P{Fn: cb.fn, NRet: 0, Protect: true}, lua.LNumber(-1))
+		}
+	case "custom":
+		var vals []interface{}
+		respData2, _ := pk.ResponseData.Value(); if err := json.Unmarshal(respData2, &vals); err != nil {
+			cb.L.CallByParam(lua.P{Fn: cb.fn, NRet: 0, Protect: true}, lua.LNil)
+			return
+		}
+		tbl := cb.L.NewTable()
+		for i, v := range vals {
+			switch val := v.(type) {
+			case float64: cb.L.RawSetInt(tbl, i+1, lua.LNumber(val))
+			case bool:    cb.L.RawSetInt(tbl, i+1, lua.LBool(val))
+			case string:  cb.L.RawSetInt(tbl, i+1, lua.LString(val))
+			default:      cb.L.RawSetInt(tbl, i+1, lua.LNil)
+			}
+		}
+		cb.L.CallByParam(lua.P{Fn: cb.fn, NRet: 0, Protect: true}, tbl)
+	}
+}

@@ -1,0 +1,100 @@
+package mods
+
+import (
+"sync"
+
+"github.com/go-gl/mathgl/mgl32"
+"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
+)
+
+type TrackedEntity struct {
+RuntimeID uint64
+Name      string
+Position  mgl32.Vec3
+Yaw       float32
+Pitch     float32
+IsPlayer  bool
+}
+
+type EntityTracker struct {
+mu       sync.RWMutex
+entities map[uint64]*TrackedEntity
+}
+
+var Entities = &EntityTracker{
+entities: make(map[uint64]*TrackedEntity),
+}
+
+type EntityTrackerMod struct{}
+
+func init() { Register(&EntityTrackerMod{}) }
+
+func (e *EntityTrackerMod) Name() string { return "EntityTracker" }
+func (e *EntityTrackerMod) Init(_ *Context, _ any) {}
+func (e *EntityTrackerMod) Tick() {}
+
+func (e *EntityTrackerMod) HandlePacket(ctx *Context) {
+if ctx.Direction != FromServer {
+return
+}
+switch pk := ctx.Packet.(type) {
+case *packet.AddPlayer:
+Entities.mu.Lock()
+Entities.entities[pk.EntityRuntimeID] = &TrackedEntity{
+RuntimeID: pk.EntityRuntimeID,
+Name:      pk.Username,
+Position:  pk.Position,
+Yaw:       pk.Yaw,
+Pitch:     pk.Pitch,
+IsPlayer:  true,
+}
+Entities.mu.Unlock()
+case *packet.AddActor:
+Entities.mu.Lock()
+Entities.entities[pk.EntityRuntimeID] = &TrackedEntity{
+RuntimeID: pk.EntityRuntimeID,
+Name:      pk.EntityType,
+Position:  pk.Position,
+Yaw:       pk.Yaw,
+Pitch:     pk.Pitch,
+IsPlayer:  false,
+}
+Entities.mu.Unlock()
+case *packet.MoveActorAbsolute:
+Entities.mu.Lock()
+if e, ok := Entities.entities[pk.EntityRuntimeID]; ok {
+e.Position = pk.Position
+e.Yaw = pk.Rotation[0]
+e.Pitch = pk.Rotation[1]
+}
+Entities.mu.Unlock()
+case *packet.MoveActorDelta:
+Entities.mu.Lock()
+if e, ok := Entities.entities[pk.EntityRuntimeID]; ok {
+e.Position = pk.Position
+}
+Entities.mu.Unlock()
+case *packet.MovePlayer:
+Entities.mu.Lock()
+if e, ok := Entities.entities[pk.EntityRuntimeID]; ok {
+e.Position = pk.Position
+e.Yaw = pk.Yaw
+e.Pitch = pk.Pitch
+}
+Entities.mu.Unlock()
+case *packet.RemoveActor:
+Entities.mu.Lock()
+delete(Entities.entities, uint64(pk.EntityUniqueID))
+Entities.mu.Unlock()
+case *packet.PlayerList:
+// Track player name updates
+for _, entry := range pk.Entries {
+if pk.ActionType == packet.PlayerListActionAdd {
+Entities.mu.Lock()
+// Store by unique ID for name lookup
+Entities.mu.Unlock()
+_ = entry
+}
+}
+}
+}

@@ -1,0 +1,117 @@
+package mods
+
+import (
+"encoding/json"
+"fmt"
+"os"
+"path/filepath"
+
+lua "github.com/yuin/gopher-lua"
+)
+
+type SchematicBlock struct {
+X     int    `json:"x"`
+Y     int    `json:"y"`
+Z     int    `json:"z"`
+Block string `json:"block"`
+}
+
+type Schematic struct {
+Blocks []SchematicBlock `json:"blocks"`
+}
+
+func getSchematicsDir() string {
+if d := os.Getenv("BF_SCHEMATICS_DIR"); d != "" {
+return d
+}
+return "schematics"
+}
+
+func getScriptsDir() string {
+if d := os.Getenv("BF_SCRIPTS_DIR"); d != "" {
+return d
+}
+return "scripts"
+}
+
+func (e *LuaEngine) registerSchematicAPI(L *lua.LState) {
+
+// loadSchematic(name) -> blocks array or nil, error
+// Each block: {x,y,z,block,runtimeID}
+L.SetGlobal("loadSchematic", L.NewFunction(func(L *lua.LState) int {
+name := L.CheckString(1)
+dir := getSchematicsDir()
+
+// Try with and without .json
+var path string
+for _, candidate := range []string{
+filepath.Join(dir, name),
+filepath.Join(dir, name+".json"),
+} {
+if _, err := os.Stat(candidate); err == nil {
+path = candidate
+break
+}
+}
+if path == "" {
+L.Push(lua.LNil)
+L.Push(lua.LString(fmt.Sprintf("schematic not found: %s", name)))
+return 2
+}
+
+data, err := os.ReadFile(path)
+if err != nil {
+L.Push(lua.LNil)
+L.Push(lua.LString(err.Error()))
+return 2
+}
+
+var sc Schematic
+if err := json.Unmarshal(data, &sc); err != nil {
+L.Push(lua.LNil)
+L.Push(lua.LString("bad JSON: "+err.Error()))
+return 2
+}
+
+tbl := L.NewTable()
+for i, b := range sc.Blocks {
+row := L.NewTable()
+L.SetField(row, "x", lua.LNumber(b.X))
+L.SetField(row, "y", lua.LNumber(b.Y))
+L.SetField(row, "z", lua.LNumber(b.Z))
+L.SetField(row, "block", lua.LString(b.Block))
+L.SetField(row, "runtimeID", lua.LNumber(RuntimeIDForBlock(b.Block)))
+L.RawSetInt(tbl, i+1, row)
+}
+L.Push(tbl)
+L.Push(lua.LNil)
+return 2
+}))
+
+// listSchematics() -> array of names
+L.SetGlobal("listSchematics", L.NewFunction(func(L *lua.LState) int {
+dir := getSchematicsDir()
+entries, err := os.ReadDir(dir)
+tbl := L.NewTable()
+if err != nil {
+L.Push(tbl)
+return 1
+}
+i := 1
+for _, entry := range entries {
+if filepath.Ext(entry.Name()) == ".json" {
+name := entry.Name()[:len(entry.Name())-5]
+L.RawSetInt(tbl, i, lua.LString(name))
+i++
+}
+}
+L.Push(tbl)
+return 1
+}))
+
+// getBlockRuntimeID(name) -> runtimeID
+L.SetGlobal("getBlockRuntimeID", L.NewFunction(func(L *lua.LState) int {
+L.Push(lua.LNumber(RuntimeIDForBlock(L.CheckString(1))))
+return 1
+}))
+}

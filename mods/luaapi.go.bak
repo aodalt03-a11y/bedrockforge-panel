@@ -1,0 +1,749 @@
+package mods
+
+import (
+"fmt"
+"math"
+
+"github.com/go-gl/mathgl/mgl32"
+lua "github.com/yuin/gopher-lua"
+"github.com/sandertv/gophertunnel/minecraft/protocol"
+"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
+)
+
+func (e *LuaEngine) registerAPI(L *lua.LState) {
+
+// ── Logging ──────────────────────────────────────────────
+L.SetGlobal("log", L.NewFunction(func(L *lua.LState) int {
+fmt.Printf("[Lua] %s\n", L.CheckString(1))
+return 0
+}))
+
+// ── Chat / Commands ───────────────────────────────────────
+L.SetGlobal("sendChat", L.NewFunction(func(L *lua.LState) int {
+if e.ctx != nil {
+_ = e.ctx.SendToServer(&packet.Text{TextType: packet.TextTypeChat, Message: L.CheckString(1)})
+}
+return 0
+}))
+
+L.SetGlobal("sendCommand", L.NewFunction(func(L *lua.LState) int {
+if e.ctx != nil {
+_ = e.ctx.SendToServer(&packet.CommandRequest{CommandLine: L.CheckString(1)})
+}
+return 0
+}))
+
+L.SetGlobal("displayChat", L.NewFunction(func(L *lua.LState) int {
+if e.ctx != nil {
+_ = e.ctx.SendToClient(&packet.Text{TextType: packet.TextTypeRaw, Message: L.CheckString(1)})
+}
+return 0
+}))
+
+// ── Titles / HUD ─────────────────────────────────────────
+// setTitle(text, fadeIn, stay, fadeOut)
+L.SetGlobal("setTitle", L.NewFunction(func(L *lua.LState) int {
+if e.ctx != nil {
+_ = e.ctx.SendToClient(&packet.SetTitle{
+ActionType:      packet.TitleActionSetTitle,
+Text:            L.CheckString(1),
+FadeInDuration:  int32(L.OptInt(2, 10)),
+RemainDuration:  int32(L.OptInt(3, 40)),
+FadeOutDuration: int32(L.OptInt(4, 10)),
+})
+}
+return 0
+}))
+
+// setSubtitle(text)
+L.SetGlobal("setSubtitle", L.NewFunction(func(L *lua.LState) int {
+if e.ctx != nil {
+_ = e.ctx.SendToClient(&packet.SetTitle{
+ActionType: packet.TitleActionSetSubtitle,
+Text:       L.CheckString(1),
+})
+}
+return 0
+}))
+
+// setActionBar(text)
+L.SetGlobal("setActionBar", L.NewFunction(func(L *lua.LState) int {
+if e.ctx != nil {
+_ = e.ctx.SendToClient(&packet.SetTitle{
+ActionType: packet.TitleActionSetActionBar,
+Text:       L.CheckString(1),
+})
+}
+return 0
+}))
+
+// clearTitle()
+L.SetGlobal("clearTitle", L.NewFunction(func(L *lua.LState) int {
+if e.ctx != nil {
+_ = e.ctx.SendToClient(&packet.SetTitle{ActionType: packet.TitleActionClear})
+}
+return 0
+}))
+
+// toast(title, message)
+L.SetGlobal("toast", L.NewFunction(func(L *lua.LState) int {
+if e.ctx != nil {
+_ = e.ctx.SendToClient(&packet.ToastRequest{
+Title:   L.CheckString(1),
+Message: L.CheckString(2),
+})
+}
+return 0
+}))
+
+// ── Sound ─────────────────────────────────────────────────
+// playSound(name, x, y, z, volume, pitch)
+L.SetGlobal("playSound", L.NewFunction(func(L *lua.LState) int {
+if e.ctx != nil {
+_ = e.ctx.SendToClient(&packet.PlaySound{
+SoundName: L.CheckString(1),
+Position:  mgl32.Vec3{float32(L.OptNumber(2, 0)), float32(L.OptNumber(3, 0)), float32(L.OptNumber(4, 0))},
+Volume:    float32(L.OptNumber(5, 1)),
+Pitch:     float32(L.OptNumber(6, 1)),
+})
+}
+return 0
+}))
+
+// stopSound(name)
+L.SetGlobal("stopSound", L.NewFunction(func(L *lua.LState) int {
+if e.ctx != nil {
+_ = e.ctx.SendToClient(&packet.StopSound{
+SoundName: L.CheckString(1),
+})
+}
+return 0
+}))
+
+// ── Camera ────────────────────────────────────────────────
+// shakeCamera(intensity, duration, type) type: 0=positional, 1=rotational
+L.SetGlobal("shakeCamera", L.NewFunction(func(L *lua.LState) int {
+if e.ctx != nil {
+_ = e.ctx.SendToClient(&packet.CameraShake{
+Intensity: float32(L.CheckNumber(1)),
+Duration:  float32(L.CheckNumber(2)),
+Type:      uint8(L.OptInt(3, 0)),
+Action:    packet.CameraShakeActionAdd,
+})
+}
+return 0
+}))
+
+// stopCameraShake()
+L.SetGlobal("stopCameraShake", L.NewFunction(func(L *lua.LState) int {
+if e.ctx != nil {
+_ = e.ctx.SendToClient(&packet.CameraShake{Action: packet.CameraShakeActionStop})
+}
+return 0
+}))
+
+// ── Blocks ────────────────────────────────────────────────
+// setBlock(x, y, z, runtimeID) - set a block client-side
+L.SetGlobal("setBlock", L.NewFunction(func(L *lua.LState) int {
+if e.ctx != nil {
+_ = e.ctx.SendToClient(&packet.UpdateBlock{
+Position:          protocol.BlockPos{int32(L.CheckInt(1)), int32(L.CheckInt(2)), int32(L.CheckInt(3))},
+NewBlockRuntimeID: uint32(L.CheckInt(4)),
+Flags:             packet.BlockUpdateNetwork,
+Layer:             0,
+})
+}
+return 0
+}))
+
+// ── Player Position ───────────────────────────────────────
+// getPos() -> x, y, z
+L.SetGlobal("getPos", L.NewFunction(func(L *lua.LState) int {
+State.mu.RLock()
+x, y, z := State.Position[0], State.Position[1], State.Position[2]
+State.mu.RUnlock()
+L.Push(lua.LNumber(x))
+L.Push(lua.LNumber(y))
+L.Push(lua.LNumber(z))
+return 3
+}))
+
+// getYaw() -> float
+L.SetGlobal("getYaw", L.NewFunction(func(L *lua.LState) int {
+State.mu.RLock()
+defer State.mu.RUnlock()
+L.Push(lua.LNumber(State.Yaw))
+return 1
+}))
+
+// getPitch() -> float
+L.SetGlobal("getPitch", L.NewFunction(func(L *lua.LState) int {
+State.mu.RLock()
+defer State.mu.RUnlock()
+L.Push(lua.LNumber(State.Pitch))
+return 1
+}))
+
+// ── Player Stats ──────────────────────────────────────────
+L.SetGlobal("getHealth", L.NewFunction(func(L *lua.LState) int {
+State.mu.RLock()
+defer State.mu.RUnlock()
+L.Push(lua.LNumber(State.Health))
+return 1
+}))
+
+L.SetGlobal("getHunger", L.NewFunction(func(L *lua.LState) int {
+State.mu.RLock()
+defer State.mu.RUnlock()
+L.Push(lua.LNumber(State.Hunger))
+return 1
+}))
+
+L.SetGlobal("getGameMode", L.NewFunction(func(L *lua.LState) int {
+State.mu.RLock()
+defer State.mu.RUnlock()
+L.Push(lua.LNumber(State.GameMode))
+return 1
+}))
+
+L.SetGlobal("getDimension", L.NewFunction(func(L *lua.LState) int {
+State.mu.RLock()
+defer State.mu.RUnlock()
+L.Push(lua.LNumber(State.Dimension))
+return 1
+}))
+
+L.SetGlobal("getRuntimeID", L.NewFunction(func(L *lua.LState) int {
+State.mu.RLock()
+defer State.mu.RUnlock()
+L.Push(lua.LNumber(State.RuntimeID))
+return 1
+}))
+
+// ── Inventory ─────────────────────────────────────────────
+L.SetGlobal("getHeldSlot", L.NewFunction(func(L *lua.LState) int {
+State.mu.RLock()
+defer State.mu.RUnlock()
+L.Push(lua.LNumber(State.HeldSlot))
+return 1
+}))
+
+L.SetGlobal("getHeldItem", L.NewFunction(func(L *lua.LState) int {
+State.mu.RLock()
+item := State.HeldItem
+State.mu.RUnlock()
+t := L.NewTable()
+L.SetField(t, "networkID", lua.LNumber(item.Stack.ItemType.NetworkID))
+L.SetField(t, "meta", lua.LNumber(item.Stack.ItemType.MetadataValue))
+L.SetField(t, "blockRuntimeID", lua.LNumber(item.Stack.BlockRuntimeID))
+L.SetField(t, "count", lua.LNumber(item.Stack.Count))
+L.Push(t)
+return 1
+}))
+
+L.SetGlobal("getInventorySlot", L.NewFunction(func(L *lua.LState) int {
+slot := byte(L.CheckInt(1))
+State.mu.RLock()
+item, ok := State.Inventory[slot]
+State.mu.RUnlock()
+if !ok {
+L.Push(lua.LNil)
+return 1
+}
+t := L.NewTable()
+L.SetField(t, "networkID", lua.LNumber(item.Stack.ItemType.NetworkID))
+L.SetField(t, "meta", lua.LNumber(item.Stack.ItemType.MetadataValue))
+L.SetField(t, "blockRuntimeID", lua.LNumber(item.Stack.BlockRuntimeID))
+L.SetField(t, "count", lua.LNumber(item.Stack.Count))
+L.Push(t)
+return 1
+}))
+
+// ── Entities ──────────────────────────────────────────────
+// getEntities() -> array of {id, name, x, y, z, isPlayer, dist}
+L.SetGlobal("getEntities", L.NewFunction(func(L *lua.LState) int {
+State.mu.RLock()
+px, py, pz := State.Position[0], State.Position[1], State.Position[2]
+State.mu.RUnlock()
+
+Entities.mu.RLock()
+tbl := L.NewTable()
+i := 1
+for _, ent := range Entities.entities {
+dx := ent.Position[0] - px
+dy := ent.Position[1] - py
+dz := ent.Position[2] - pz
+dist := math.Sqrt(float64(dx*dx + dy*dy + dz*dz))
+e := L.NewTable()
+L.SetField(e, "id", lua.LNumber(ent.RuntimeID))
+L.SetField(e, "name", lua.LString(ent.Name))
+L.SetField(e, "x", lua.LNumber(ent.Position[0]))
+L.SetField(e, "y", lua.LNumber(ent.Position[1]))
+L.SetField(e, "z", lua.LNumber(ent.Position[2]))
+L.SetField(e, "yaw", lua.LNumber(ent.Yaw))
+L.SetField(e, "pitch", lua.LNumber(ent.Pitch))
+L.SetField(e, "isPlayer", lua.LBool(ent.IsPlayer))
+L.SetField(e, "dist", lua.LNumber(dist))
+L.RawSetInt(tbl, i, e)
+i++
+}
+Entities.mu.RUnlock()
+L.Push(tbl)
+return 1
+}))
+
+// getNearestPlayer() -> {id, name, x, y, z, dist} or nil
+L.SetGlobal("getNearestPlayer", L.NewFunction(func(L *lua.LState) int {
+State.mu.RLock()
+px, py, pz := State.Position[0], State.Position[1], State.Position[2]
+myID := State.RuntimeID
+State.mu.RUnlock()
+
+Entities.mu.RLock()
+var nearest *TrackedEntity
+nearestDist := math.MaxFloat64
+for _, ent := range Entities.entities {
+if !ent.IsPlayer || ent.RuntimeID == myID {
+continue
+}
+dx := ent.Position[0] - px
+dy := ent.Position[1] - py
+dz := ent.Position[2] - pz
+dist := math.Sqrt(float64(dx*dx + dy*dy + dz*dz))
+if dist < nearestDist {
+nearestDist = dist
+nearest = ent
+}
+}
+Entities.mu.RUnlock()
+
+if nearest == nil {
+L.Push(lua.LNil)
+return 1
+}
+t := L.NewTable()
+L.SetField(t, "id", lua.LNumber(nearest.RuntimeID))
+L.SetField(t, "name", lua.LString(nearest.Name))
+L.SetField(t, "x", lua.LNumber(nearest.Position[0]))
+L.SetField(t, "y", lua.LNumber(nearest.Position[1]))
+L.SetField(t, "z", lua.LNumber(nearest.Position[2]))
+L.SetField(t, "dist", lua.LNumber(nearestDist))
+L.Push(t)
+return 1
+}))
+
+// ── Timing ────────────────────────────────────────────────
+L.SetGlobal("ticks", L.NewFunction(func(L *lua.LState) int {
+e.mu.Lock()
+t := e.tickCount
+e.mu.Unlock()
+L.Push(lua.LNumber(t))
+return 1
+}))
+
+// ── Packet control ────────────────────────────────────────
+L.SetGlobal("dropPacket", L.NewFunction(func(L *lua.LState) int {
+e.dropCurrent = true
+return 0
+}))
+
+// ── Math helpers ──────────────────────────────────────────
+// distanceTo(x1,y1,z1,x2,y2,z2) -> float
+L.SetGlobal("distanceTo", L.NewFunction(func(L *lua.LState) int {
+dx := float64(L.CheckNumber(1)) - float64(L.CheckNumber(4))
+dy := float64(L.CheckNumber(2)) - float64(L.CheckNumber(5))
+dz := float64(L.CheckNumber(3)) - float64(L.CheckNumber(6))
+L.Push(lua.LNumber(math.Sqrt(dx*dx + dy*dy + dz*dz)))
+return 1
+}))
+}
+
+func (e *LuaEngine) registerAdvancedAPI(L *lua.LState) {
+
+// ── Movement ──────────────────────────────────────────────
+// movePlayer(x, y, z, yaw, pitch, onGround)
+L.SetGlobal("movePlayer", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.MovePlayer{
+EntityRuntimeID: rid,
+Position:        mgl32.Vec3{float32(L.CheckNumber(1)), float32(L.CheckNumber(2)), float32(L.CheckNumber(3))},
+Yaw:             float32(L.CheckNumber(4)),
+Pitch:           float32(L.CheckNumber(5)),
+HeadYaw:         float32(L.CheckNumber(4)),
+Mode:            packet.MoveModeNormal,
+OnGround:        L.OptBool(6, true),
+})
+return 0
+}))
+
+// teleportPlayer(x, y, z, yaw, pitch)
+L.SetGlobal("teleportPlayer", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.MovePlayer{
+EntityRuntimeID: rid,
+Position:        mgl32.Vec3{float32(L.CheckNumber(1)), float32(L.CheckNumber(2)), float32(L.CheckNumber(3))},
+Yaw:             float32(L.OptNumber(4, 0)),
+Pitch:           float32(L.OptNumber(5, 0)),
+HeadYaw:         float32(L.OptNumber(4, 0)),
+Mode:            packet.MoveModeTeleport,
+OnGround:        true,
+TeleportCause:   packet.TeleportCauseCommand,
+})
+return 0
+}))
+
+// playerAction(actionType, x, y, z, face)
+// actionType constants exposed below
+L.SetGlobal("playerAction", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.PlayerAction{
+EntityRuntimeID: rid,
+ActionType:      int32(L.CheckInt(1)),
+BlockPosition:   protocol.BlockPos{int32(L.OptInt(2, 0)), int32(L.OptInt(3, 0)), int32(L.OptInt(4, 0))},
+BlockFace:       int32(L.OptInt(5, 0)),
+})
+return 0
+}))
+
+// startSprint() / stopSprint()
+L.SetGlobal("startSprint", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.PlayerAction{EntityRuntimeID: rid, ActionType: protocol.PlayerActionStartSprint})
+return 0
+}))
+L.SetGlobal("stopSprint", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.PlayerAction{EntityRuntimeID: rid, ActionType: protocol.PlayerActionStopSprint})
+return 0
+}))
+
+// startSneak() / stopSneak()
+L.SetGlobal("startSneak", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.PlayerAction{EntityRuntimeID: rid, ActionType: protocol.PlayerActionStartSneak})
+return 0
+}))
+L.SetGlobal("stopSneak", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.PlayerAction{EntityRuntimeID: rid, ActionType: protocol.PlayerActionStopSneak})
+return 0
+}))
+
+// startFlying() / stopFlying()
+L.SetGlobal("startFlying", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.PlayerAction{EntityRuntimeID: rid, ActionType: protocol.PlayerActionStartFlying})
+return 0
+}))
+L.SetGlobal("stopFlying", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.PlayerAction{EntityRuntimeID: rid, ActionType: protocol.PlayerActionStopFlying})
+return 0
+}))
+
+// jump()
+L.SetGlobal("jump", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.PlayerAction{EntityRuntimeID: rid, ActionType: protocol.PlayerActionJump})
+return 0
+}))
+
+// startSwimming() / stopSwimming()
+L.SetGlobal("startSwimming", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.PlayerAction{EntityRuntimeID: rid, ActionType: protocol.PlayerActionStartSwimming})
+return 0
+}))
+L.SetGlobal("stopSwimming", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.PlayerAction{EntityRuntimeID: rid, ActionType: protocol.PlayerActionStopSwimming})
+return 0
+}))
+
+// respawn()
+L.SetGlobal("respawn", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.PlayerAction{EntityRuntimeID: rid, ActionType: protocol.PlayerActionRespawn})
+return 0
+}))
+
+// ── Combat ────────────────────────────────────────────────
+// attackEntity(runtimeID)
+L.SetGlobal("attackEntity", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+targetID := uint64(L.CheckInt(1))
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.InventoryTransaction{
+TransactionData: &protocol.UseItemOnEntityTransactionData{
+TargetEntityRuntimeID: targetID,
+ActionType:            protocol.UseItemOnEntityActionAttack,
+HotBarSlot:            int32(State.HeldSlot),
+HeldItem:              State.HeldItem,
+},
+})
+_ = e.ctx.SendToServer(&packet.Animate{
+ActionType:      packet.AnimateActionSwingArm,
+EntityRuntimeID: rid,
+SwingSource:     packet.AnimateSwingSourceAttack,
+})
+return 0
+}))
+
+// swingArm()
+L.SetGlobal("swingArm", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.Animate{
+ActionType:      packet.AnimateActionSwingArm,
+EntityRuntimeID: rid,
+SwingSource:     packet.AnimateSwingSourceAttack,
+})
+return 0
+}))
+
+// interactEntity(runtimeID) - right click entity
+L.SetGlobal("interactEntity", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+targetID := uint64(L.CheckInt(1))
+_ = e.ctx.SendToServer(&packet.InventoryTransaction{
+TransactionData: &protocol.UseItemOnEntityTransactionData{
+TargetEntityRuntimeID: targetID,
+ActionType:            protocol.UseItemOnEntityActionInteract,
+HotBarSlot:            int32(State.HeldSlot),
+HeldItem:              State.HeldItem,
+},
+})
+return 0
+}))
+
+// ── Block interaction ─────────────────────────────────────
+// breakBlock(x, y, z, face)
+L.SetGlobal("breakBlock", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+rid := State.RuntimeID
+pos := State.Position
+State.mu.RUnlock()
+bp := protocol.BlockPos{int32(L.CheckInt(1)), int32(L.CheckInt(2)), int32(L.CheckInt(3))}
+face := int32(L.OptInt(4, 1))
+_ = e.ctx.SendToServer(&packet.PlayerAction{EntityRuntimeID: rid, ActionType: protocol.PlayerActionStartBreak, BlockPosition: bp, BlockFace: face})
+_ = e.ctx.SendToServer(&packet.InventoryTransaction{
+TransactionData: &protocol.UseItemTransactionData{
+ActionType:      protocol.UseItemActionBreakBlock,
+BlockPosition:   bp,
+BlockFace:       face,
+BlockRuntimeID:  0,
+Position:        pos,
+ClickedPosition: mgl32.Vec3{0.5, 0.5, 0.5},
+HeldItem:        State.HeldItem,
+},
+})
+_ = e.ctx.SendToServer(&packet.PlayerAction{EntityRuntimeID: rid, ActionType: protocol.PlayerActionStopBreak, BlockPosition: bp, BlockFace: face})
+return 0
+}))
+
+// placeBlock(x, y, z, face, runtimeID)
+L.SetGlobal("placeBlock", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+pos := State.Position
+State.mu.RUnlock()
+bp := protocol.BlockPos{int32(L.CheckInt(1)), int32(L.CheckInt(2)), int32(L.CheckInt(3))}
+face := int32(L.OptInt(4, 1))
+_ = e.ctx.SendToServer(&packet.InventoryTransaction{
+TransactionData: &protocol.UseItemTransactionData{
+ActionType:      protocol.UseItemActionClickBlock,
+BlockPosition:   bp,
+BlockFace:       face,
+BlockRuntimeID:  uint32(L.OptInt(5, 0)),
+Position:        pos,
+ClickedPosition: mgl32.Vec3{0.5, 0.5, 0.5},
+HeldItem:        State.HeldItem,
+},
+})
+return 0
+}))
+
+// ── Look ──────────────────────────────────────────────────
+// lookAt(x, y, z) - rotate to face a position
+L.SetGlobal("lookAt", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+State.mu.RLock()
+px, py, pz := State.Position[0], State.Position[1], State.Position[2]
+rid := State.RuntimeID
+State.mu.RUnlock()
+tx, ty, tz := float32(L.CheckNumber(1)), float32(L.CheckNumber(2)), float32(L.CheckNumber(3))
+dx := float64(tx - px)
+dy := float64(ty - (py + 1.62))
+dz := float64(tz - pz)
+dist := math.Sqrt(dx*dx + dz*dz)
+yaw := float32(-math.Atan2(dx, dz) * 180 / math.Pi)
+pitch := float32(-math.Atan2(dy, dist) * 180 / math.Pi)
+State.mu.Lock()
+State.Yaw = yaw
+State.Pitch = pitch
+State.mu.Unlock()
+_ = e.ctx.SendToServer(&packet.MovePlayer{
+EntityRuntimeID: rid,
+Position:        mgl32.Vec3{px, py, pz},
+Yaw:             yaw,
+Pitch:           pitch,
+HeadYaw:         yaw,
+Mode:            packet.MoveModeNormal,
+OnGround:        true,
+})
+return 0
+}))
+
+// ── Hotbar ────────────────────────────────────────────────
+// selectSlot(slot) - switch held hotbar slot
+L.SetGlobal("selectSlot", L.NewFunction(func(L *lua.LState) int {
+if e.ctx == nil { return 0 }
+slot := byte(L.CheckInt(1))
+State.mu.RLock()
+rid := State.RuntimeID
+State.mu.RUnlock()
+_ = e.ctx.SendToServer(&packet.MobEquipment{
+EntityRuntimeID: rid,
+NewItem:         State.Inventory[slot],
+InventorySlot:   slot,
+HotBarSlot:      slot,
+})
+State.mu.Lock()
+State.HeldSlot = slot
+State.mu.Unlock()
+return 0
+}))
+
+// ── PlayerAction constants ────────────────────────────────
+actions := L.NewTable()
+L.SetField(actions, "START_BREAK",        lua.LNumber(protocol.PlayerActionStartBreak))
+L.SetField(actions, "ABORT_BREAK",        lua.LNumber(protocol.PlayerActionAbortBreak))
+L.SetField(actions, "STOP_BREAK",         lua.LNumber(protocol.PlayerActionStopBreak))
+L.SetField(actions, "DROP_ITEM",          lua.LNumber(protocol.PlayerActionDropItem))
+L.SetField(actions, "START_SLEEP",        lua.LNumber(protocol.PlayerActionStartSleeping))
+L.SetField(actions, "STOP_SLEEP",         lua.LNumber(protocol.PlayerActionStopSleeping))
+L.SetField(actions, "RESPAWN",            lua.LNumber(protocol.PlayerActionRespawn))
+L.SetField(actions, "JUMP",               lua.LNumber(protocol.PlayerActionJump))
+L.SetField(actions, "START_SPRINT",       lua.LNumber(protocol.PlayerActionStartSprint))
+L.SetField(actions, "STOP_SPRINT",        lua.LNumber(protocol.PlayerActionStopSprint))
+L.SetField(actions, "START_SNEAK",        lua.LNumber(protocol.PlayerActionStartSneak))
+L.SetField(actions, "STOP_SNEAK",         lua.LNumber(protocol.PlayerActionStopSneak))
+L.SetField(actions, "START_GLIDE",        lua.LNumber(protocol.PlayerActionStartGlide))
+L.SetField(actions, "STOP_GLIDE",         lua.LNumber(protocol.PlayerActionStopGlide))
+L.SetField(actions, "START_SWIM",         lua.LNumber(protocol.PlayerActionStartSwimming))
+L.SetField(actions, "STOP_SWIM",          lua.LNumber(protocol.PlayerActionStopSwimming))
+L.SetField(actions, "START_FLY",          lua.LNumber(protocol.PlayerActionStartFlying))
+L.SetField(actions, "STOP_FLY",           lua.LNumber(protocol.PlayerActionStopFlying))
+L.SetField(actions, "MISSED_SWING",       lua.LNumber(protocol.PlayerActionMissedSwing))
+L.SetField(actions, "START_CRAWL",        lua.LNumber(protocol.PlayerActionStartCrawling))
+L.SetField(actions, "STOP_CRAWL",         lua.LNumber(protocol.PlayerActionStopCrawling))
+L.SetGlobal("ACTION", actions)
+}
+
+// ── ESP / World to Screen ─────────────────────────────────────────────────
+// worldToScreen(wx, wy, wz, screenW, screenH, fov) -> sx, sy, visible
+// Projects a world position to screen coordinates
+func (e *LuaEngine) registerESPAPI(L *lua.LState) {
+L.SetGlobal("worldToScreen", L.NewFunction(func(L *lua.LState) int {
+wx := float64(L.CheckNumber(1))
+wy := float64(L.CheckNumber(2))
+wz := float64(L.CheckNumber(3))
+screenW := float64(L.CheckNumber(4))
+screenH := float64(L.CheckNumber(5))
+fov := float64(L.OptNumber(6, 70))
+
+State.mu.RLock()
+px := float64(State.Position[0])
+py := float64(State.Position[1]) + 1.62
+pz := float64(State.Position[2])
+yaw := float64(State.Yaw) * math.Pi / 180
+pitch := float64(State.Pitch) * math.Pi / 180
+State.mu.RUnlock()
+
+// Translate to camera space
+dx := wx - px
+dy := wy - py
+dz := wz - pz
+
+// Rotate by yaw
+rx := dx*math.Cos(-yaw) - dz*math.Sin(-yaw)
+ry := dy
+rz := dx*math.Sin(-yaw) + dz*math.Cos(-yaw)
+
+// Rotate by pitch
+fy := ry*math.Cos(-pitch) - rz*math.Sin(-pitch)
+fz := ry*math.Sin(-pitch) + rz*math.Cos(-pitch)
+
+// Behind camera
+if fz <= 0 {
+L.Push(lua.LNumber(0))
+L.Push(lua.LNumber(0))
+L.Push(lua.LFalse)
+return 3
+}
+
+// Project to screen
+fovRad := fov * math.Pi / 180
+scale := (screenH / 2) / math.Tan(fovRad/2)
+sx := (rx/fz)*scale + screenW/2
+sy := (-fy/fz)*scale + screenH/2
+_ = rx
+
+visible := sx >= 0 && sx <= screenW && sy >= 0 && sy <= screenH
+L.Push(lua.LNumber(sx))
+L.Push(lua.LNumber(sy))
+L.Push(lua.LBool(visible))
+return 3
+}))
+
+// sendESPData(data) - print ESP JSON to stdout for overlay app
+L.SetGlobal("sendESPData", L.NewFunction(func(L *lua.LState) int {
+data := L.CheckString(1)
+fmt.Println("[ESP]" + data)
+return 0
+}))
+}
